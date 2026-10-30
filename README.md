@@ -1,11 +1,11 @@
-# vstbridge (Haiku)
+# vstbridge (RenkuOS)
 
-> **Users:** install the whole stack from the
-> [JackDAW release](https://github.com/rations/jackDAW-haiku/releases) (`sh install.sh`).
-> This repository is the source of the `vstbridge` package.
+> This repository is the source of the `vstbridge` package, part of the
+> [JackDAW stack](https://github.com/rations/jackDAW-renku) for RenkuOS. The 0.5
+> release's `install.sh` is for Haiku hrev60256; there is no RenkuOS release yet.
 
-Run **Windows VST2 and VST3 plug-ins** in native Haiku hosts such as
-[JackDAW](https://github.com/rations/jackDAW-haiku). vstbridge is a Haiku port of
+Run **Windows VST2 and VST3 plug-ins** in native RenkuOS hosts such as
+[JackDAW](https://github.com/rations/jackDAW-renku). vstbridge is a RenkuOS port of
 [yabridge](https://github.com/robbert-vdh/yabridge) by Robbert van der Helm. Each Windows
 plug-in gets a small native stub add-on. When a host loads the stub, it starts the plug-in in
 a Wine host process and passes audio, MIDI, parameters and the editor across.
@@ -40,11 +40,12 @@ OpenGL backend is part of it.
 ## Requirements
 
 - **The stack's Wine 11.19** (the `wine` package from
-  [haiku-wine-port-jackdaw](https://github.com/rations/haiku-wine-port-jackdaw)). The Wine host
-  is a C++ Winelib program, and stock Haiku Wine does not run its static initialisers. The
-  patches also cover iLok installers and PACE-protected plug-ins.
-- For 32-bit installers and iLok/PACE-protected plug-ins, the stack's system package (see the
-  JackDAW release).
+  [renku-wine-port-jackdaw](https://github.com/rations/renku-wine-port-jackdaw)), built on
+  RenkuOS. The Wine host is a C++ Winelib program, and the stock HaikuPorts Wine does not run
+  its static initialisers.
+- 64-bit Windows plug-ins only. 32-bit installers and iLok/PACE-protected plug-ins need a
+  kernel with per-team LDT and debug-register support, which RenkuOS does not have (the
+  JackDAW 0.5 system package adds it on Haiku).
 - VST2 and VST3 only: the CLAP bridge depends on yabridge's X11 editor code, which this port
   replaces.
 
@@ -69,10 +70,10 @@ OpenGL backend is part of it.
 
 ## Building
 
-On Haiku x86_64 with the stack's Wine installed:
+On RenkuOS x86_64 with the stack's Wine installed:
 
 ```sh
-pkgman install -y meson ninja gcc make pkgconfig
+pkgman install -y meson ninja asio gcc make pkgconfig
 packaging/make-hpkg.sh
 ```
 
