@@ -1,11 +1,11 @@
 # vstbridge (RenkuOS)
 
-> This repository is the source of the `vstbridge` package, part of the
-> [JackDAW stack](https://github.com/rations/jackDAW-renku) for RenkuOS. The 0.5
-> release's `install.sh` is for Haiku hrev60256; there is no RenkuOS release yet.
+> This repository is the source of the `vstbridge` package for RenkuOS. Built
+> packages are on its [Releases](https://github.com/rations/vstbridge-renku/releases) page, and
+> [renku-audio](https://github.com/rations/renku-audio) lists the whole audio stack.
 
 Run **Windows VST2 and VST3 plug-ins** in native RenkuOS hosts such as
-[JackDAW](https://github.com/rations/jackDAW-renku). vstbridge is a RenkuOS port of
+[Kasen](https://github.com/rations/kasen). vstbridge is a RenkuOS port of
 [yabridge](https://github.com/robbert-vdh/yabridge) by Robbert van der Helm. Each Windows
 plug-in gets a small native stub add-on. When a host loads the stub, it starts the plug-in in
 a Wine host process and passes audio, MIDI, parameters and the editor across.
@@ -40,12 +40,11 @@ OpenGL backend is part of it.
 ## Requirements
 
 - **The stack's Wine 11.19** (the `wine` package from
-  [renku-wine-port-jackdaw](https://github.com/rations/renku-wine-port-jackdaw)), built on
-  RenkuOS. The Wine host is a C++ Winelib program, and the stock HaikuPorts Wine does not run
+  [renku-wine-port](https://github.com/rations/renku-wine-port)), built on
+  RenkuOS. The Wine host is a C++ Winelib program, and a stock Wine build does not run
   its static initialisers.
 - 64-bit Windows plug-ins only. 32-bit installers and iLok/PACE-protected plug-ins need a
-  kernel with per-team LDT and debug-register support, which RenkuOS does not have (the
-  JackDAW 0.5 system package adds it on Haiku).
+  kernel with per-team LDT and debug-register support, which RenkuOS does not have.
 - VST2 and VST3 only: the CLAP bridge depends on yabridge's X11 editor code, which this port
   replaces.
 
