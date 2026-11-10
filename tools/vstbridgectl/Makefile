@@ -101,17 +101,24 @@ endif
 all: deps $(TARGET) $(GUI_TARGET)
 
 # ─── Dependency fetch ─────────────────────────────────────────────────────────
+# The three libraries are vendored under deps/ in this repository, so these
+# rules only run if a header is missing. They key on a header, not on a nested
+# .git directory, which a checkout of the vendored copies does not have.
 
-$(DEP_DIR)/cli11/.git:
+CLI11_HDR    := $(DEP_DIR)/cli11/include/CLI/CLI.hpp
+NLOHMANN_HDR := $(DEP_DIR)/nlohmann/include/nlohmann/json.hpp
+TOMLPP_HDR   := $(DEP_DIR)/tomlplusplus/include/toml++/toml.hpp
+
+$(CLI11_HDR):
 	git clone --depth 1 --branch $(CLI11_TAG) $(CLI11_URL) $(DEP_DIR)/cli11
 
-$(DEP_DIR)/nlohmann/.git:
+$(NLOHMANN_HDR):
 	git clone --depth 1 --branch $(NLOHMANN_TAG) $(NLOHMANN_URL) $(DEP_DIR)/nlohmann
 
-$(DEP_DIR)/tomlplusplus/.git:
+$(TOMLPP_HDR):
 	git clone --depth 1 --branch $(TOMLPP_TAG) $(TOMLPP_URL) $(DEP_DIR)/tomlplusplus
 
-deps: $(DEP_DIR)/cli11/.git $(DEP_DIR)/nlohmann/.git $(DEP_DIR)/tomlplusplus/.git
+deps: $(CLI11_HDR) $(NLOHMANN_HDR) $(TOMLPP_HDR)
 
 # ─── Build rules ──────────────────────────────────────────────────────────────
 

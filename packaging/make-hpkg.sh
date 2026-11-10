@@ -6,7 +6,7 @@
 #
 # Requires Wine (winegcc) and meson/ninja for the bridge, and g++ (C++20) for the
 # two front-ends. Install first:
-#     pkgman install -y wine meson ninja gcc make pkgconfig
+#     pkgman install -y wine meson ninja asio dbus_devel gcc make pkgconfig
 #
 # The layout below follows vstbridgectl's own search logic (src/config.cpp):
 #   - the chainloaders are looked up in the standard library directories, of

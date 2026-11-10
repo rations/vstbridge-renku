@@ -72,7 +72,7 @@ OpenGL backend is part of it.
 On RenkuOS x86_64 with the stack's Wine installed:
 
 ```sh
-pkgman install -y meson ninja asio gcc make pkgconfig
+pkgman install -y meson ninja asio dbus_devel gcc make pkgconfig
 packaging/make-hpkg.sh
 ```
 
