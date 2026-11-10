@@ -20,3 +20,7 @@ subprojects/packagecache/
 *~
 *.swp
 .DS_Store
+
+# Built packages (published as release assets, not committed)
+packaging/*.hpkg
+packaging/stage/
