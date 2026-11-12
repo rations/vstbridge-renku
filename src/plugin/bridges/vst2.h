@@ -19,6 +19,7 @@
 #include <vestige/aeffectx.h>
 
 #include <asio/io_context.hpp>
+#include <atomic>
 #include <thread>
 
 #include "../../common/communication/vst2.h"
@@ -151,6 +152,17 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
      * this in `Vst2EventHandler`.
      */
     std::mutex parameters_mutex_;
+
+    /**
+     * Set once audio processing or a parameter call has found the Wine plugin
+     * host gone. It does not come back for this instance, so from then on
+     * audio is silence and parameters read as 0 without touching the sockets.
+     * Events have a flag of their own in `Vst2EventHandler`.
+     *
+     * Atomic because it is read on the audio thread and set on whichever
+     * thread found out first.
+     */
+    std::atomic_bool host_is_gone_ = false;
 
     /**
      * The callback function passed by the host to the VST plugin instance.

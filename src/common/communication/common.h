@@ -576,7 +576,10 @@ class AdHocSocketHandler {
     AdHocSocketHandler(asio::io_context& io_context,
                        asio::local::stream_protocol::endpoint endpoint,
                        bool listen)
-        : io_context_(io_context), endpoint_(endpoint), socket_(io_context) {
+        : io_context_(io_context),
+          endpoint_(endpoint),
+          socket_(io_context),
+          listening_side_(listen) {
         if (listen) {
             ghc::filesystem::create_directories(
                 ghc::filesystem::path(endpoint.path()).parent_path());
@@ -828,8 +831,12 @@ class AdHocSocketHandler {
      * where their error handling has to differ: the plugin side has to survive
      * the Wine host dying, while on the Wine host side the same failure is a
      * bug that should not be swallowed.
+     *
+     * This cannot be read off `acceptor_`: `connect()` resets it once the first
+     * connection is in, so after that it would say every handler is on the
+     * Wine host side.
      */
-    bool is_listening_side() const noexcept { return acceptor_.has_value(); }
+    bool is_listening_side() const noexcept { return listening_side_; }
 
    private:
     /**
@@ -891,6 +898,12 @@ class AdHocSocketHandler {
      * listened for on the plugin side.
      */
     std::optional<asio::local::stream_protocol::acceptor> acceptor_;
+
+    /**
+     * The `listen` argument the handler was constructed with. See
+     * `is_listening_side()`.
+     */
+    const bool listening_side_;
 
     /**
      * After the socket gets closed, we do some cleanup at the end of

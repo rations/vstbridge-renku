@@ -205,11 +205,42 @@ class Vst2EventHandler : public AdHocSocketHandler<Thread> {
         // from the socket, so we can override this for specific function calls
         // that potentially need to have their responses handled on the same
         // calling thread (i.e. mutual recursion).
-        const Vst2EventResult response =
-            this->send([&](asio::local::stream_protocol::socket& socket) {
-                return data_converter.send_event(socket, event,
-                                                 serialization_buffer());
-            });
+        //
+        // If the peer died, the socket operations in there throw. On the plugin
+        // side there is nobody above us to catch that: `dispatch()` is called
+        // through a C ABI from one of the host's threads, so the exception
+        // would terminate the entire host. Containing a plugin crash is the
+        // whole point of running the plugin out of process, so as in
+        // `TypedMessageHandler::receive_into()` we swallow it here and report
+        // the event as unhandled, with a return value of 0 and nothing written
+        // back to `data`. The Wine host does not come back, so the flag makes
+        // every later event fail immediately instead of touching a socket that
+        // will never answer. Nothing is logged on this path, since events such
+        // as `effProcessEvents` arrive on the audio thread.
+        //
+        // Only the plugin side does this. On the Wine host side an exception
+        // here means a bug of ours that should not be hidden.
+        const bool is_plugin_side = this->is_listening_side();
+        if (is_plugin_side && peer_is_gone_.load(std::memory_order_relaxed)) {
+            return 0;
+        }
+
+        Vst2EventResult response{};
+        try {
+            response = this->send(
+                [&](asio::local::stream_protocol::socket& socket) {
+                    return data_converter.send_event(socket, event,
+                                                     serialization_buffer());
+                });
+        } catch (const std::exception&) {
+            if (!is_plugin_side) {
+                throw;
+            }
+
+            peer_is_gone_.store(true, std::memory_order_relaxed);
+
+            return 0;
+        }
 
         if (logging) {
             auto [logger, is_dispatch] = *logging;
@@ -285,6 +316,15 @@ class Vst2EventHandler : public AdHocSocketHandler<Thread> {
     }
 
    private:
+    /**
+     * Set on the plugin side once sending an event has failed, which means the
+     * Wine host is gone. See `send_event()`.
+     *
+     * Atomic because events are sent from several of the host's threads at
+     * once.
+     */
+    std::atomic_bool peer_is_gone_ = false;
+
     /**
      * Unlike our VST3 implementation, in the VST2 implementation there's no
      * separation between potentially real time critical events that will be

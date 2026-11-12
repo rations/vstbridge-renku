@@ -702,6 +702,26 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
 template <typename T, bool replacing>
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
+    // The Wine plugin host lives in another process precisely so that its death
+    // cannot take the host down with it, and that only holds if processing
+    // tolerates the peer being gone. The socket operations below throw when it
+    // is, and since this is called through a C ABI from the host's audio thread
+    // nothing above us would catch that. So once the host is gone the plugin
+    // degrades to silence. For `process()`, which adds to `outputs`, adding
+    // silence means leaving them alone. This allocates nothing and does not
+    // log, as it runs on the audio thread.
+    const auto write_silence = [&]() {
+        if constexpr (replacing) {
+            for (int channel = 0; channel < plugin_.numOutputs; channel++) {
+                std::fill_n(outputs[channel], sample_frames, T{0});
+            }
+        }
+    };
+    if (host_is_gone_.load(std::memory_order_relaxed)) {
+        write_silence();
+        return;
+    }
+
     // During audio processing we'll write the inputs to shared memory buffers,
     // and we'll then send this request alongside it with additional information
     // needed to process audio
@@ -769,12 +789,18 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     // After writing audio to the shared memory buffers, we'll send the
     // processing request parameters to the Wine plugin host so it can start
     // processing audio. This is why we don't need any explicit synchronisation.
-    sockets_.host_plugin_process_replacing_.send(request);
-
+    //
     // From the Wine side we'll send a zero byte struct back as an
     // acknowledgement that audio processing has finished. At this point the
     // audio will have been written to our buffers.
-    sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+    try {
+        sockets_.host_plugin_process_replacing_.send(request);
+        sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+    } catch (const std::exception&) {
+        host_is_gone_.store(true, std::memory_order_relaxed);
+        write_silence();
+        return;
+    }
 
     for (int channel = 0; channel < plugin_.numOutputs; channel++) {
         const T* output_channel =
@@ -851,13 +877,28 @@ float Vst2PluginBridge::get_parameter(AEffect* /*plugin*/, int index) {
     ParameterResult response;
 
     // Prevent race conditions from `getParameter()` and `setParameter()` being
-    // called at the same time since  they share the same socket
+    // called at the same time since  they share the same socket. A Wine plugin
+    // host that is gone answers 0, see `do_process()`.
     {
         std::lock_guard lock(parameters_mutex_);
-        sockets_.host_plugin_parameters_.send(request);
+        if (host_is_gone_.load(std::memory_order_relaxed)) {
+            return 0.0f;
+        }
 
-        response =
-            sockets_.host_plugin_parameters_.receive_single<ParameterResult>();
+        try {
+            sockets_.host_plugin_parameters_.send(request);
+
+            response = sockets_.host_plugin_parameters_
+                           .receive_single<ParameterResult>();
+        } catch (const std::exception&) {
+            host_is_gone_.store(true, std::memory_order_relaxed);
+            return 0.0f;
+        }
+    }
+
+    // A malformed answer is not worth taking the host down for either
+    if (!response.value) {
+        return 0.0f;
     }
 
     logger_.log_get_parameter_response(*response.value);
@@ -875,10 +916,19 @@ void Vst2PluginBridge::set_parameter(AEffect* /*plugin*/,
 
     {
         std::lock_guard lock(parameters_mutex_);
-        sockets_.host_plugin_parameters_.send(request);
+        if (host_is_gone_.load(std::memory_order_relaxed)) {
+            return;
+        }
 
-        response =
-            sockets_.host_plugin_parameters_.receive_single<ParameterResult>();
+        try {
+            sockets_.host_plugin_parameters_.send(request);
+
+            response = sockets_.host_plugin_parameters_
+                           .receive_single<ParameterResult>();
+        } catch (const std::exception&) {
+            host_is_gone_.store(true, std::memory_order_relaxed);
+            return;
+        }
     }
 
     logger_.log_set_parameter_response();
