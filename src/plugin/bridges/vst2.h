@@ -26,7 +26,7 @@
 #include "common.h"
 
 #ifdef __HAIKU__
-#include "../editor-view-haiku.h"
+#include "../editor-host-haiku.h"
 #endif
 
 /**
@@ -201,20 +201,11 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
     /**
      * On Haiku the plugin's editor cannot be embedded into the host's window
      * (app_server refuses a parent view token owned by another team). The Wine
-     * host publishes the editor's frames through shared memory and this view
-     * paints them into the `BView` the host passed to `effEditOpen`. See
-     * `plugin/editor-view-haiku.h`.
+     * host's graphics driver shows the editor window through this view
+     * instead, which lives in the `BView` the host passed to `effEditOpen`.
+     * See `plugin/editor-host-haiku.h`. Null while no editor is shown.
      */
-    std::unique_ptr<BridgedEditorView> editor_view_;
-
-    /**
-     * Map (or remap) the shared-memory surface the Wine host publishes the
-     * editor's frames to, and point `editor_view_` at it. The surface name is
-     * derived from the shared socket directory; the dimensions come from the
-     * last `effEditGetRect`. A no-op until the editor has reported a size and
-     * the Wine host has created the object.
-     */
-    void refresh_editor_surface();
+    std::unique_ptr<HostedEditorView> editor_view_;
 #endif
 
     /**

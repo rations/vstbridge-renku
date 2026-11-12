@@ -20,17 +20,14 @@
 // reached through `editor.h` under `#ifdef __HAIKU__` so no call site has to
 // care which one it got.
 //
-// There is no embedding here, and there cannot be. Haiku gives every
-// application its own view token space, and app_server refuses a parent view
-// token that belongs to another team, so nothing equivalent to XEmbed or X11
-// reparenting exists: a BView cannot be adopted by a window in another process.
-// The bitmap-over-shared-memory design that works around this is phase 3 work.
-//
-// For now the plugin's own Wine window is simply shown as a normal top-level
-// window. It is fully interactive -- phase 0 confirmed a Windows plugin GUI
-// renders and responds to input under Wine on Haiku -- it just floats
-// separately from jackDAW rather than sitting inside it. That keeps phase 1
-// focused on audio, IPC and realtime behaviour with no GUI risk attached.
+// There is no embedding here, and there cannot be: app_server only lets a
+// program create views in its own windows, so nothing equivalent to XEmbed or
+// X11 reparenting exists. Instead the editor window opts in to the graphics
+// driver's hosted mode (winerenku.drv, see `src/include/renku/renku_host.h`):
+// the driver gives it no window on screen, keeps its pixels where the native
+// side can map them, and takes the native side's input as its own. The native
+// side shows them in a view inside the host's window. This needs the prefix to
+// use winerenku.drv, which is Wine's default on RenkuOS.
 
 #include <memory>
 #include <optional>
@@ -41,9 +38,8 @@
 #include <function2/function2.hpp>
 
 #include "../common/configuration.h"
-#include "../common/editor-shm.h"
+#include "../common/editor-host.h"
 #include "../common/logging/common.h"
-#include "editor-capture.h"
 #include "utils.h"
 
 /**
@@ -116,7 +112,8 @@ class PopupStyleFixer {
  * Creates the Win32 window a hosted plugin embeds its own editor into. Mirrors
  * the public surface of the X11 `Editor` so the bridges do not need to know
  * which platform they were built for, but performs no reparenting: the window
- * is an ordinary top-level Wine window.
+ * is a borderless top-level window that the graphics driver shows in the
+ * native side's view instead of on screen.
  */
 class Editor {
    public:
@@ -155,7 +152,9 @@ class Editor {
     void resize(uint16_t width, uint16_t height);
 
     /**
-     * Show the window, called after the plugin has embedded itself.
+     * Show the window, called after the plugin has embedded itself. This is
+     * when the graphics driver takes the window into its hosted mode, so it is
+     * also when `host()` gets its answer.
      */
     void show() noexcept;
 
@@ -180,64 +179,14 @@ class Editor {
     void run_idle_timer();
 
     /**
-     * Grab a frame of the plugin's editor and publish it to the native side.
-     * Called from the window procedure on the capture timer.
+     * What the native side needs to show this editor, or `std::nullopt` if the
+     * graphics driver did not take the window into its hosted mode, which means
+     * the prefix does not use winerenku.drv. Set by `show()`, on the GUI
+     * thread; read afterwards from the thread that answers the native side.
      */
-    void run_capture();
-
-    /**
-     * Start carrying this editor's frames over a shared memory object with
-     * this name, so the native plugin can paint them into the host's window.
-     *
-     * The object is created here when the plugin has already reported an
-     * editor size, so `surface_config()` has something to hand back straight
-     * away. If it has not, the object is created on the first captured frame
-     * instead.
-     *
-     * @param width The editor's width as the plugin reported it, or 0 if it
-     *   has not reported one yet.
-     * @param height As `width`.
-     */
-    void enable_surface(const std::string& name,
-                        uint16_t width,
-                        uint16_t height);
-
-    /**
-     * The configuration the native side needs in order to map the same shared
-     * memory object, or `std::nullopt` if no frame has been captured yet.
-     */
-    std::optional<EditorShmSurface::Config> surface_config() const noexcept;
+    std::optional<EditorHost> host() const noexcept;
 
    private:
-    /**
-     * Hand any input the native side has queued to the plugin, oldest first.
-     *
-     * Called from the capture timer, which runs on the thread that owns the
-     * editor window. That matters: the input system expects to be driven from
-     * a proper Wine thread, and the native side writes its events from a
-     * `BWindow` looper that Wine knows nothing about.
-     */
-    void drain_input();
-
-    /**
-     * Inject one mouse event. `client_origin` is the editor's client area in
-     * screen coordinates, since that is what the input system wants.
-     */
-    void inject_mouse(const EditorInputEvent& event,
-                      const POINT& client_origin) noexcept;
-
-    /**
-     * Inject one key event.
-     */
-    void inject_key(const EditorInputEvent& event) noexcept;
-
-    /**
-     * Copy the frame `capture_` just took into the shared memory object,
-     * creating or re-laying-out that object first if the editor's size has
-     * changed. Only called when a surface has been asked for.
-     */
-    void publish_frame();
-
     Logger& logger_;
 
     /**
@@ -260,49 +209,9 @@ class Editor {
     std::optional<Win32Timer> timer_;
 
     /**
-     * Reads the plugin's editor window back into a bitmap. Declared after the
-     * window so it is destroyed before it, since it holds the window handle.
+     * See `host()`.
      */
-    EditorCapture capture_;
-
-    /**
-     * The timer driving `capture_`, only set when capturing is enabled.
-     */
-    std::optional<Win32Timer> capture_timer_;
-
-    /**
-     * The shared memory object the captured frames are published to, and the
-     * name it was asked to use. The object is created on the first captured
-     * frame, once the editor's size is known, and re-laid-out whenever that
-     * size changes.
-     */
-    std::optional<EditorShmSurface> surface_;
-    std::string surface_name_;
-
-    /**
-     * The interval both timers run at, kept so the capture timer can be
-     * started later than the constructor if a surface is asked for.
-     */
-    unsigned int capture_interval_ms_ = 0;
-
-    /**
-     * Set after a surface setup failure has been logged, so a permanently
-     * failing surface cannot flood the log at the frame rate.
-     */
-    bool logged_surface_failure_ = false;
-
-    /**
-     * Where `VSTBRIDGE_CAPTURE_DUMP` asked for captured frames to be written,
-     * if it was set. Frames are written as `<prefix>-<frame>.bmp`.
-     */
-    std::optional<std::string> capture_dump_prefix_;
-
-    /**
-     * How many times `run_capture()` has run, used to pick which frames get
-     * dumped. Saturates rather than wrapping so a long lived editor cannot
-     * start dumping again.
-     */
-    uint32_t captured_frames_ = 0;
+    std::optional<EditorHost> host_;
 
     /**
      * Keeps plugin popup windows from being managed by a window manager while

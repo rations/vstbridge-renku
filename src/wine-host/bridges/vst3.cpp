@@ -827,26 +827,6 @@ void Vst3Bridge::run() {
                             //       pointers when the window is already
                             //       visible. Thanks Waves.
                             instance.editor->show();
-
-#ifdef __HAIKU__
-                            // The editor cannot be embedded into the host's
-                            // window here, so its frames are published through
-                            // shared memory for the native side to paint
-                            // instead. Handing over the size the plugin just
-                            // reported lets the object be created now, so the
-                            // native side has something to map on the request
-                            // it makes right after this one returns.
-                            instance.editor->enable_surface(
-                                sockets_.base_dir_.filename().string() +
-                                    "-editor-" +
-                                    std::to_string(request.owner_instance_id),
-                                has_size
-                                    ? static_cast<uint16_t>(size.getWidth())
-                                    : 0,
-                                has_size
-                                    ? static_cast<uint16_t>(size.getHeight())
-                                    : 0);
-#endif
                         } else {
                             instance.editor.reset();
                         }
@@ -856,20 +836,21 @@ void Vst3Bridge::run() {
                     .get();
             },
 #ifdef __HAIKU__
-            [&](const YaPlugView::GetEditorSurface& request)
-                -> YaPlugView::GetEditorSurface::Response {
+            [&](const YaPlugView::GetEditorHost& request)
+                -> YaPlugView::GetEditorHost::Response {
                 const auto& [instance, _] =
                     get_instance(request.owner_instance_id);
 
-                // An absent config is normal rather than an error: the editor
-                // may not have drawn its first frame yet, and the native side
-                // will ask again
+                // The native side asks right after `attached()` has returned,
+                // by which point `Editor::show()` has run on the GUI thread
+                // and the answer no longer changes. No editor, or one the
+                // graphics driver did not take, gives an empty answer.
                 if (!instance.editor) {
-                    return YaPlugView::GetEditorSurface::Response{};
+                    return YaPlugView::GetEditorHost::Response{};
                 }
 
-                return YaPlugView::GetEditorSurface::Response{
-                    .config = instance.editor->surface_config()};
+                return YaPlugView::GetEditorHost::Response{
+                    .host = instance.editor->host()};
             },
 #endif
             [&](const YaPlugView::Removed& request)

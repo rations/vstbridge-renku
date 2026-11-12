@@ -27,6 +27,9 @@
 #include "../bitsery/ext/in-place-optional.h"
 #include "../bitsery/ext/in-place-variant.h"
 #include "../bitsery/traits/small-vector.h"
+#ifdef __HAIKU__
+#include "../editor-host.h"
+#endif
 #include "../utils.h"
 #include "../vst24.h"
 #include "common.h"
@@ -332,6 +335,10 @@ struct Vst2EventResult {
      * - A specific struct in response to an event such as `audioMasterGetTime`
      *   or `audioMasterIOChanged`.
      * - An X11 window pointer for the editor window.
+     * - On Haiku, where the Wine host's graphics driver shows the editor for
+     *   `effEditOpen` (see `common/editor-host.h`). Both ends of the bridge
+     *   are built for the same platform, so the alternative existing on one
+     *   platform only does not matter.
      *
      * @relates passthrough_event
      */
@@ -345,7 +352,12 @@ struct Vst2EventResult {
                                  VstMidiKeyName,
                                  VstParameterProperties,
                                  VstRect,
-                                 VstTimeInfo>;
+                                 VstTimeInfo
+#ifdef __HAIKU__
+                                 ,
+                                 EditorHost
+#endif
+                                 >;
 
     /**
      * The result that should be returned from the dispatch function.

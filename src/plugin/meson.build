@@ -75,12 +75,11 @@ vst2_plugin_sources = files(
 )
 
 if is_haiku
-  # The editor's pixels are carried over shared memory instead of the editor
-  # window being embedded into the host's, which is impossible here. See the
-  # comments at the top of `common/editor-shm.h`.
+  # The editor is shown in a view of our own instead of being embedded into
+  # the host's window, which is impossible here. See the comments at the top of
+  # `editor-host-haiku.h`.
   vst2_plugin_sources += files(
-    '../common/editor-shm.cpp',
-    'editor-view-haiku.cpp',
+    'editor-host-haiku.cpp',
   )
 endif
 
@@ -194,12 +193,11 @@ if with_vst3
   )
 
   if is_haiku
-    # The editor's pixels are carried over shared memory instead of the editor
-    # window being embedded into the host's, which is impossible here. See the
-    # comments at the top of `common/editor-shm.h`.
+    # The editor is shown in a view of our own instead of being embedded into
+    # the host's window, which is impossible here. See the comments at the top
+    # of `editor-host-haiku.h`.
     vst3_plugin_sources += files(
-      '../common/editor-shm.cpp',
-      'editor-view-haiku.cpp',
+      'editor-host-haiku.cpp',
     )
   endif
 endif

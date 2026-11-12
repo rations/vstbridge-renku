@@ -24,7 +24,7 @@
 #include "../plug-frame-proxy.h"
 
 #ifdef __HAIKU__
-#include "../../../editor-shm.h"
+#include "../../../editor-host.h"
 #endif
 
 #pragma GCC diagnostic push
@@ -35,13 +35,14 @@
  * understands `kPlatformTypeHWND`, so every platform type crossing the bridge
  * is translated to and from this one.
  *
- * On Haiku the host hands out a `BView*` rather than an X11 window ID. Note
- * that in phase 1 nothing is embedded into it: cross-team `BView` embedding is
- * impossible (see the comments at the top of `wine-host/editor-haiku.h`), so
- * the parent is accepted and ignored, and the editor opens as its own
- * top-level window. Advertising the type the host expects still matters,
- * because a host that gets `isPlatformTypeSupported` answered for a type it
- * did not ask about will not open the editor at all.
+ * On Haiku the host hands out a `BView*` rather than an X11 window ID. Nothing
+ * from the Wine side can be embedded into it, since cross-team `BView`
+ * embedding is impossible (see the comments at the top of
+ * `wine-host/editor-haiku.h`); the native side adds a view of its own to it
+ * that the Wine host's graphics driver shows the editor in. Advertising the
+ * type the host expects matters, because a host that gets
+ * `isPlatformTypeSupported` answered for a type it did not ask about will not
+ * open the editor at all.
  *
  * This is a function rather than a constant because the SDK declares these as
  * `const FIDString` (i.e. `const char* const`), which is const but not
@@ -150,27 +151,24 @@ class YaPlugView : public Steinberg::IPlugView {
 
 #ifdef __HAIKU__
     /**
-     * Ask the Wine plugin host for the shared memory object carrying this
-     * editor's frames.
+     * Ask the Wine plugin host where this editor can be shown from.
      *
      * This exists because the editor cannot be embedded into the host's window
-     * on Haiku -- app_server rejects a parent view token owned by another team
-     * -- so the editor's pixels are copied across the process boundary and
-     * painted into a `BView` on this side instead. See `common/editor-shm.h`.
+     * on Haiku -- app_server only lets a program create views in its own
+     * windows -- so the Wine host's graphics driver shows it in a view on this
+     * side instead. See `common/editor-host.h`.
      *
-     * The plugin sends this after a successful `attached()`, and again whenever
-     * the editor's size has changed, since the object has to be laid out for
-     * the new frame size. An empty response means the host has no editor
-     * surface to offer, which is not an error: the editor may not have been
-     * created yet.
+     * The plugin sends this once after a successful `attached()`. An empty
+     * response means the graphics driver did not take the editor window, in
+     * which case the Wine host has logged why.
      */
-    struct GetEditorSurface {
+    struct GetEditorHost {
         struct Response {
-            std::optional<EditorShmSurface::Config> config;
+            std::optional<EditorHost> host;
 
             template <typename S>
             void serialize(S& s) {
-                s.ext(config, bitsery::ext::InPlaceOptional{});
+                s.ext(host, bitsery::ext::InPlaceOptional{});
             }
         };
 

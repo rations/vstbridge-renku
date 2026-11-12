@@ -506,6 +506,41 @@ class DispatchDataConverter : public DefaultDataConverter {
     VstRect& rect_;
 };
 
+#ifdef __HAIKU__
+/**
+ * `DispatchDataConverter` for `effEditOpen`, which also picks up where the Wine
+ * host's graphics driver shows the editor. The Wine host attaches that to its
+ * response, see `EditorHost`.
+ */
+class EditOpenDataConverter : public DispatchDataConverter {
+   public:
+    EditOpenDataConverter(std::optional<AudioShmBuffer>& process_buffers,
+                          std::vector<uint8_t>& chunk_data,
+                          AEffect& plugin,
+                          VstRect& editor_rectangle,
+                          std::optional<EditorHost>& editor_host) noexcept
+        : DispatchDataConverter(process_buffers,
+                                chunk_data,
+                                plugin,
+                                editor_rectangle),
+          editor_host_(editor_host) {}
+
+    void write_data(const int opcode,
+                    void* data,
+                    const Vst2EventResult& response) const override {
+        if (const auto* host = std::get_if<EditorHost>(&response.payload)) {
+            editor_host_ = *host;
+            return;
+        }
+
+        DispatchDataConverter::write_data(opcode, data, response);
+    }
+
+   private:
+    std::optional<EditorHost>& editor_host_;
+};
+#endif
+
 intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
                                     int opcode,
                                     int index,
@@ -613,19 +648,28 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
 #ifdef __HAIKU__
         case effEditOpen: {
             // Forward to the Wine host first: it creates the editor's Win32
-            // window and starts publishing the editor's frames to shared
-            // memory. Then paint those frames into the `BView` the host passed
-            // as `data` -- nothing can be embedded into it directly on Haiku,
-            // as app_server refuses a parent view token owned by another team.
+            // window and hands it to its graphics driver, and answers with
+            // where the driver can be reached. Then show the window in the
+            // `BView` the host passed as `data` -- nothing can be embedded into
+            // it directly on Haiku, as app_server refuses a parent view token
+            // owned by another team.
+            std::optional<EditorHost> editor_host;
+            const EditOpenDataConverter edit_open_converter(
+                process_buffers_, chunk_data_, plugin_, editor_rectangle_,
+                editor_host);
             const intptr_t result = sockets_.host_plugin_dispatch_.send_event(
-                converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode,
-                index, value, data, option);
-            if (data) {
-                editor_view_ = std::make_unique<BridgedEditorView>(
-                    logger_.logger_, [this]() { refresh_editor_surface(); });
-                if (editor_view_->attach_to(data)) {
-                    refresh_editor_surface();
-                } else {
+                edit_open_converter,
+                std::pair<Vst2Logger&, bool>(logger_, true), opcode, index,
+                value, data, option);
+
+            // Without a host the Wine side has already logged why, and the
+            // host's view stays empty rather than the editor opening in a
+            // window of its own
+            editor_view_.reset();
+            if (data && editor_host) {
+                editor_view_ =
+                    std::make_unique<HostedEditorView>(logger_.logger_);
+                if (!editor_view_->attach(data, *editor_host)) {
                     editor_view_.reset();
                 }
             }
@@ -654,40 +698,6 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
         converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode, index,
         value, data, option);
 }
-
-#ifdef __HAIKU__
-void Vst2PluginBridge::refresh_editor_surface() {
-    if (!editor_view_) {
-        return;
-    }
-
-    // The Wine host names the surface after the shared socket directory (one
-    // plugin per bridge process for VST2); its dimensions are whatever the
-    // plugin last reported through `effEditGetRect`.
-    const uint16_t width = static_cast<uint16_t>(editor_rectangle_.right -
-                                                 editor_rectangle_.left);
-    const uint16_t height = static_cast<uint16_t>(editor_rectangle_.bottom -
-                                                  editor_rectangle_.top);
-    if (width == 0 || height == 0) {
-        // The editor has not reported a size yet; a later call picks it up.
-        return;
-    }
-
-    EditorShmSurface::Config config;
-    if (!EditorShmSurface::config_for(
-            sockets_.base_dir_.filename().string() + "-editor", width, height,
-            config)) {
-        return;
-    }
-
-    // The editor may not have published its first frame yet, in which case the
-    // object does not exist and `set_surface()` fails; the view's periodic
-    // request callback brings us back here to try again.
-    if (!editor_view_->has_surface_for(config)) {
-        editor_view_->set_surface(config);
-    }
-}
-#endif
 
 template <typename T, bool replacing>
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)

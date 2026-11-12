@@ -521,6 +521,12 @@ void Vst2Logger::log_event_response(
                             << config.name << "\", " << config.size
                             << " bytes>";
                 },
+#ifdef __HAIKU__
+                [&](const EditorHost& host) {
+                    message << ", <editor window " << host.cookie << " in team "
+                            << host.team << ">";
+                },
+#endif
                 [&](const DynamicSpeakerArrangement& speaker_arrangement) {
                     message << ", <" << speaker_arrangement.speakers_.size()
                             << " output_speakers>";

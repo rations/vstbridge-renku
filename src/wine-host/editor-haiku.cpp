@@ -21,87 +21,39 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 
-// Wine's internal `ntuser.h` does not compile as C++, so the input injection
-// lives behind a small C shim
-#include "editor-input.h"
+#include "../include/renku/renku_host.h"
 
 using namespace std::literals::chrono_literals;
 
 namespace {
 
 /**
- * The IDs we'll use for our timers. These only have to be unique within the
+ * The ID we'll use for our idle timer. This only has to be unique within the
  * window.
  */
 constexpr size_t idle_timer_id = 1337;
-constexpr size_t capture_timer_id = 1338;
 
 /**
- * Which frames get written out when `VSTBRIDGE_CAPTURE_DUMP` is set. At the
- * default 60 fps these land roughly 0.1, 0.5 and 2 seconds after the editor
- * opens, which is enough to tell a plugin that never draws from one that just
- * had not drawn yet when the first frame was taken.
- */
-constexpr uint32_t capture_dump_frames[] = {5, 30, 120};
-
-/**
- * Warn when the prefix is not using Wine's null graphics driver.
+ * Say why the editor cannot be shown when the graphics driver did not take the
+ * window into its hosted mode.
  *
- * The editor is bridged by capturing the plugin window's backing store and
- * painting it in the host, so the plugin's own on-screen window is never wanted
- * -- it just floats over the host as a second copy of the same editor. The null
- * driver is what suppresses it: it declines to create a driver window surface,
- * which sends win32u down its offscreen surface path instead, so the window
- * still gets somewhere to draw and still receives `WM_PAINT` while never
- * reaching a display. Hiding the window would not do, since an invisible window
- * gets no surface at all and stops painting entirely.
- *
- * This cannot be set from here. The driver is chosen once per prefix, by
- * explorer when it creates the desktop, from
- * `HKCU\Software\Wine\Drivers\Graphics` -- so all this can do is say what is
- * wrong and how to fix it. Anything other than the null driver still works,
- * just with the plugin's own window visible alongside the host's copy.
+ * That happens when the prefix uses another driver than winerenku.drv -- most
+ * likely the null driver that vstbridge 0.3 told people to set, which this
+ * version no longer wants -- or a winerenku.drv from before the hosted mode.
  */
-void warn_unless_null_graphics_driver(Logger& logger) noexcept {
-    // Left empty when the key or the value is missing, which means Wine picks
-    // its compiled-in default rather than the null driver
-    char driver[32]{};
-
-    HKEY key = nullptr;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Wine\\Drivers", 0,
-                      KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        DWORD type = 0;
-        // One short of the buffer, so a value stored without its terminator
-        // still leaves the zero initialization in place at the end
-        DWORD size = sizeof(driver) - 1;
-        if (RegQueryValueExA(key, "Graphics", nullptr, &type,
-                             reinterpret_cast<BYTE*>(driver),
-                             &size) != ERROR_SUCCESS ||
-            type != REG_SZ) {
-            driver[0] = '\0';
-        }
-
-        RegCloseKey(key);
-    }
-
-    if (std::strcmp(driver, "null") == 0) {
-        return;
-    }
-
+void log_no_hosted_mode(Logger& logger) {
     logger.log("");
-    logger.log("WARNING: This Wine prefix uses the '" +
-               std::string(driver[0] ? driver : "<default>") +
-               "' graphics driver.");
-    logger.log("         The plugin's own editor window will be visible on");
-    logger.log("         screen on top of the copy drawn in the host. Set it");
-    logger.log("         to 'null' to keep the editor to the host window:");
+    logger.log("WARNING: Wine's graphics driver did not take the plugin's");
+    logger.log("         editor window, so the editor cannot be shown in");
+    logger.log("         the host. This needs the RenkuOS driver,");
+    logger.log("         winerenku.drv, from Wine 11.21-10 or later. If");
+    logger.log("         this prefix was set up for vstbridge 0.3, remove");
+    logger.log("         the null driver setting it asked for:");
     logger.log("");
-    logger.log("           wine reg add 'HKCU\\Software\\Wine\\Drivers' \\");
-    logger.log("             /v Graphics /d null /f");
+    logger.log("           wine reg delete 'HKCU\\Software\\Wine\\Drivers' \\");
+    logger.log("             /v Graphics /f");
     logger.log("");
 }
 
@@ -109,9 +61,9 @@ void warn_unless_null_graphics_driver(Logger& logger) noexcept {
  * The window procedure for our editor windows.
  *
  * The X11 build needs an elaborate one to deal with reparenting, coordinate
- * fixups and focus grabbing. None of that applies to a plain top-level window,
- * so this only has to drive the idle timer that VST2 plugins rely on for
- * `effEditIdle`.
+ * fixups and focus grabbing. None of that applies here: the graphics driver
+ * places the window and delivers its input. This only has to drive the idle
+ * timer that VST2 plugins rely on for `effEditIdle`.
  */
 LRESULT CALLBACK window_proc(HWND handle,
                              UINT message,
@@ -127,12 +79,12 @@ LRESULT CALLBACK window_proc(HWND handle,
                 reinterpret_cast<LONG_PTR>(create_params->lpCreateParams));
         } break;
         case WM_TIMER: {
-            if (wParam != idle_timer_id && wParam != capture_timer_id) {
+            if (wParam != idle_timer_id) {
                 break;
             }
 
             // `GWLP_USERDATA` only holds the `Editor` once its constructor has
-            // gotten far enough to set it, and a timer cannot fire before it
+            // gotten far enough to set it, and the timer cannot fire before it
             // has been created after that point, so this is null only during
             // window creation
             auto* editor = reinterpret_cast<Editor*>(
@@ -141,11 +93,7 @@ LRESULT CALLBACK window_proc(HWND handle,
                 break;
             }
 
-            if (wParam == idle_timer_id) {
-                editor->run_idle_timer();
-            } else {
-                editor->run_capture();
-            }
+            editor->run_idle_timer();
 
             return 0;
         } break;
@@ -186,7 +134,8 @@ DeferredWin32Window::~DeferredWin32Window() noexcept {
     // rather than calling `DestroyWindow()` directly, because that can hang for
     // a second or two, and the post itself is delayed so a message loop tick
     // landing between `IPlugView::removed()` and `IPlugView::~IPlugView` cannot
-    // stall the host.
+    // stall the host. Nothing lingers on screen meanwhile: the window was only
+    // ever shown in the native side's view, which is gone by now.
     try {
         std::shared_ptr<asio::steady_timer> destroy_timer =
             std::make_shared<asio::steady_timer>(main_context_.context_);
@@ -280,69 +229,54 @@ Editor::Editor(MainContext& main_context,
                const size_t /*parent_window_handle*/,
                std::optional<fu2::unique_function<void()>> timer_proc)
     : logger_(logger),
-      // Unlike the X11 build this is a normal decorated top-level window rather
-      // than a `WS_EX_TOOLWINDOW`/`WS_POPUP` one sized to the whole screen.
-      // Nothing is going to reparent or clip it, so it should look and behave
-      // like any other window.
+      // A borderless popup: what the native side shows is exactly the area the
+      // plugin draws, with no frame of Wine's around it. The size is set by
+      // `resize()` once the plugin has reported one.
       //
       // NOTE: The window procedure reaches this `Editor` through the window's
-      //       `GWLP_USERDATA` to service both timers, so everything a timer
-      //       touches has to outlive the window. `idle_timer_proc_` and
-      //       `capture_` are declared after `win32_window_` in the header for
-      //       that reason -- destruction runs in reverse.
+      //       `GWLP_USERDATA` to service the idle timer, so everything the
+      //       timer touches has to outlive the window. `idle_timer_proc_` is
+      //       declared after `win32_window_` in the header for that reason --
+      //       destruction runs in reverse.
       win32_window_(main_context,
                     CreateWindowEx(0,
                                    reinterpret_cast<LPCSTR>(get_window_class()),
                                    "vstbridge plugin",
-                                   WS_OVERLAPPEDWINDOW,
-                                   CW_USEDEFAULT,
-                                   CW_USEDEFAULT,
+                                   WS_POPUP,
+                                   0,
+                                   0,
                                    256,
                                    256,
                                    nullptr,
                                    nullptr,
                                    GetModuleHandle(nullptr),
                                    nullptr)),
-      // `win32_window_` is declared before this, so its handle is already
-      // valid here. It may still be null if window creation failed, which
-      // `EditorCapture` tolerates by never capturing anything.
-      capture_(logger, win32_window_.handle_),
       popup_style_fixer_(config.editor_popup_fix, logger) {
     if (!win32_window_.handle_) {
         logger_.log("Could not create the plugin's editor window");
         return;
     }
 
-    // The bridge depends on a prefix-wide setting it cannot make itself, so a
-    // prefix that has not been set up says so in the log rather than silently
-    // growing a second editor window
-    warn_unless_null_graphics_driver(logger_);
+    // The graphics driver decides when the window is first shown, so this has
+    // to be set before `show()`. Any non-null value opts in.
+    if (!SetPropA(win32_window_.handle_, RENKU_HOST_PROP_HOSTED,
+                  reinterpret_cast<HANDLE>(1))) {
+        logger_.log("Could not mark the editor window for the host");
+    }
 
-    // Both timers reach this object through the window, so this has to be set
-    // before either of them is created
+    // The timer reaches this object through the window, so this has to be set
+    // before it is created
     SetWindowLongPtr(win32_window_.handle_, GWLP_USERDATA,
                      reinterpret_cast<LONG_PTR>(this));
 
-    capture_interval_ms_ = static_cast<unsigned int>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            config.event_loop_interval())
-            .count());
-
     if (timer_proc) {
         idle_timer_proc_ = std::move(*timer_proc);
-        timer_.emplace(win32_window_.handle_, idle_timer_id,
-                       capture_interval_ms_);
-    }
-
-    if (const char* dump_prefix = std::getenv("VSTBRIDGE_CAPTURE_DUMP")) {
-        if (*dump_prefix) {
-            capture_dump_prefix_ = dump_prefix;
-            capture_timer_.emplace(win32_window_.handle_, capture_timer_id,
-                                   capture_interval_ms_);
-
-            logger_.log("Editor capture: enabled, frames will be written to '" +
-                        *capture_dump_prefix_ + "-<frame>.bmp'");
-        }
+        timer_.emplace(
+            win32_window_.handle_, idle_timer_id,
+            static_cast<unsigned int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    config.event_loop_interval())
+                    .count()));
     }
 }
 
@@ -352,315 +286,14 @@ void Editor::run_idle_timer() {
     }
 }
 
-void Editor::publish_frame() {
-    // The editor's size is only known once the plugin has drawn, so the object
-    // is created here rather than in `enable_surface()`, and re-laid-out
-    // whenever the plugin resizes itself
-    EditorShmSurface::Config config;
-    if (!EditorShmSurface::config_for(surface_name_, capture_.width(),
-                                      capture_.height(), config)) {
-        return;
-    }
-
-    try {
-        if (!surface_) {
-            surface_.emplace(config, true);
-            logger_.log("Editor surface: publishing " +
-                        std::to_string(config.width) + "x" +
-                        std::to_string(config.height) + " frames through '" +
-                        config.name + "'");
-        } else if (surface_->width() != config.width ||
-                   surface_->height() != config.height) {
-            surface_->resize(config);
-            logger_.log("Editor surface: resized to " +
-                        std::to_string(config.width) + "x" +
-                        std::to_string(config.height));
-        }
-    } catch (const std::exception& error) {
-        // Losing the surface costs the editor its picture in the host, but it
-        // must not take the plugin down with it
-        if (!logged_surface_failure_) {
-            logger_.log("Editor surface: could not be set up: " +
-                        std::string(error.what()));
-            logged_surface_failure_ = true;
-        }
-
-        surface_.reset();
-        return;
-    }
-
-    logged_surface_failure_ = false;
-    surface_->write_frame(capture_.pixels(), capture_.width(),
-                          capture_.height());
-}
-
-void Editor::enable_surface(const std::string& name,
-                            uint16_t width,
-                            uint16_t height) {
-    surface_name_ = name;
-
-    // Create the object up front, since the plugin has already reported how
-    // big its editor is. The native side asks for it once immediately after
-    // attaching, and waiting for the first captured frame would mean having
-    // nothing to hand it on that call.
-    if (width > 0 && height > 0) {
-        EditorShmSurface::Config config;
-        if (EditorShmSurface::config_for(surface_name_, width, height,
-                                         config)) {
-            try {
-                surface_.emplace(config, true);
-                logger_.log("Editor surface: publishing " +
-                            std::to_string(config.width) + "x" +
-                            std::to_string(config.height) +
-                            " frames through '" + config.name + "'");
-            } catch (const std::exception& error) {
-                // Not fatal: `publish_frame()` tries again on the first
-                // captured frame
-                logger_.log("Editor surface: could not be set up yet: " +
-                            std::string(error.what()));
-                surface_.reset();
-            }
-        }
-    }
-
-    // The capture timer may already be running for the frame dump
-    if (!capture_timer_ && win32_window_.handle_) {
-        capture_timer_.emplace(win32_window_.handle_, capture_timer_id,
-                               capture_interval_ms_);
-    }
-}
-
-std::optional<EditorShmSurface::Config> Editor::surface_config()
-    const noexcept {
-    if (!surface_) {
-        return std::nullopt;
-    }
-
-    return surface_->config();
-}
-
-namespace {
-
-/**
- * Translate one of Haiku's raw character codes into a Win32 virtual key code.
- *
- * This mapping lives here rather than on the native side because this is the
- * only side where the `VK_*` constants exist as real symbols, so it is written
- * against the Windows headers instead of copying their values into a file that
- * cannot check them. The two are genuinely different: `B_RETURN` is 0x0a where
- * `VK_RETURN` is 0x0d, and Home, End and the page keys all disagree too.
- *
- * The Haiku constants are spelled numerically because this file is compiled
- * with winegcc and cannot include the Interface Kit's headers; the names from
- * `headers/os/interface/InterfaceDefs.h` are given alongside each one.
- *
- * Only the keys a plugin editor realistically needs are mapped. Anything else
- * falls through as its own code, which is correct for the letters and digits
- * that already share Win32's numbering.
- */
-UINT virtual_key_from_haiku(uint32_t raw_char) noexcept {
-    switch (raw_char) {
-        case 0x01:  // B_HOME
-            return VK_HOME;
-        case 0x04:  // B_END
-            return VK_END;
-        case 0x08:  // B_BACKSPACE
-            return VK_BACK;
-        case 0x09:  // B_TAB
-            return VK_TAB;
-        case 0x0a:  // B_RETURN / B_ENTER
-            return VK_RETURN;
-        case 0x0b:  // B_PAGE_UP
-            return VK_PRIOR;
-        case 0x0c:  // B_PAGE_DOWN
-            return VK_NEXT;
-        case 0x1b:  // B_ESCAPE
-            return VK_ESCAPE;
-        case 0x1c:  // B_LEFT_ARROW
-            return VK_LEFT;
-        case 0x1d:  // B_RIGHT_ARROW
-            return VK_RIGHT;
-        case 0x1e:  // B_UP_ARROW
-            return VK_UP;
-        case 0x1f:  // B_DOWN_ARROW
-            return VK_DOWN;
-        case 0x7f:  // B_DELETE
-            return VK_DELETE;
-        default:
-            break;
-    }
-
-    // Win32 uses the uppercase letter as the virtual key code, so lowercase
-    // has to be folded up or the plugin sees the wrong key entirely
-    if (raw_char >= 'a' && raw_char <= 'z') {
-        return static_cast<UINT>(raw_char - 'a' + 'A');
-    }
-
-    return static_cast<UINT>(raw_char);
-}
-
-}  // namespace
-
-void Editor::drain_input() {
-    if (!surface_ || !win32_window_.handle_) {
-        return;
-    }
-
-    // The window's position is needed to turn client coordinates back into the
-    // screen coordinates the input system expects. Fetched once per drain
-    // rather than per event, since it cannot change midway through.
-    RECT window_rect{};
-    POINT client_origin{0, 0};
-    const bool have_position =
-        GetWindowRect(win32_window_.handle_, &window_rect) &&
-        ClientToScreen(win32_window_.handle_, &client_origin);
-
-    bool sent_mouse = false;
-    EditorInputEvent event{};
-    while (surface_->pop_input(event)) {
-        // Everything in the mapping is untrusted, so an unrecognised event is
-        // dropped rather than being cast to an enumerator it does not name
-        switch (static_cast<EditorInputType>(event.type)) {
-            case EditorInputType::mouse_move:
-            case EditorInputType::mouse_down:
-            case EditorInputType::mouse_up:
-            case EditorInputType::mouse_wheel:
-                if (have_position) {
-                    inject_mouse(event, client_origin);
-                    sent_mouse = true;
-                }
-                break;
-            case EditorInputType::key_down:
-            case EditorInputType::key_up:
-                inject_key(event);
-                break;
-            default:
-                break;
-        }
-    }
-
-    // Wine holds plain pointer motion back until the batch is ended, the way
-    // its own drivers end theirs; see `vstbridge_flush_mouse_input()`
-    if (sent_mouse) {
-        vstbridge_flush_mouse_input(win32_window_.handle_);
-    }
-}
-
-void Editor::inject_mouse(const EditorInputEvent& event,
-                          const POINT& client_origin) noexcept {
-    // The injection path takes raw screen pixels, unlike the public
-    // `SendInput()`, which scales absolute coordinates into a 0..65535 range.
-    // Only `NtUserSendInput()` runs that conversion, so passing normalized
-    // coordinates here would put the pointer in the wrong place entirely.
-    DWORD flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    DWORD mouse_data = 0;
-
-    switch (static_cast<EditorInputType>(event.type)) {
-        case EditorInputType::mouse_down:
-            switch (static_cast<EditorMouseButton>(event.button)) {
-                case EditorMouseButton::left:
-                    flags |= MOUSEEVENTF_LEFTDOWN;
-                    break;
-                case EditorMouseButton::right:
-                    flags |= MOUSEEVENTF_RIGHTDOWN;
-                    break;
-                case EditorMouseButton::middle:
-                    flags |= MOUSEEVENTF_MIDDLEDOWN;
-                    break;
-                default:
-                    break;
-            }
-            break;
-        case EditorInputType::mouse_up:
-            switch (static_cast<EditorMouseButton>(event.button)) {
-                case EditorMouseButton::left:
-                    flags |= MOUSEEVENTF_LEFTUP;
-                    break;
-                case EditorMouseButton::right:
-                    flags |= MOUSEEVENTF_RIGHTUP;
-                    break;
-                case EditorMouseButton::middle:
-                    flags |= MOUSEEVENTF_MIDDLEUP;
-                    break;
-                default:
-                    break;
-            }
-            break;
-        case EditorInputType::mouse_wheel:
-            flags |= MOUSEEVENTF_WHEEL;
-            mouse_data = static_cast<DWORD>(event.wheel * WHEEL_DELTA);
-            break;
-        default:
-            break;
-    }
-
-    // No target window is named, so the server routes the event by position the
-    // way a real mouse driver's would. Naming the editor window instead would
-    // pin every event to it: the server only hit-tests when the named window is
-    // invisible, so a dropdown the plugin opened -- a separate top-level window
-    // sitting above the editor -- would never see a click.
-    vstbridge_send_mouse_input(nullptr, client_origin.x + event.x,
-                               client_origin.y + event.y, flags, mouse_data);
-}
-
-void Editor::inject_key(const EditorInputEvent& event) noexcept {
-    const DWORD flags =
-        static_cast<EditorInputType>(event.type) == EditorInputType::key_up
-            ? KEYEVENTF_KEYUP
-            : 0;
-
-    vstbridge_send_key_input(
-        win32_window_.handle_,
-        static_cast<WORD>(virtual_key_from_haiku(event.button)), flags);
-}
-
-void Editor::run_capture() {
-    // Input is drained on the same timer as the capture, so it is handled on
-    // the thread that owns the editor window rather than on whichever thread
-    // the native side happened to write it from
-    drain_input();
-
-    if (!capture_.capture()) {
-        return;
-    }
-
-    if (!surface_name_.empty()) {
-        publish_frame();
-    }
-
-    // Saturate rather than wrap, so an editor left open for a very long time
-    // cannot come back around and start dumping frames again
-    if (captured_frames_ < UINT32_MAX) {
-        captured_frames_++;
-    }
-
-    if (!capture_dump_prefix_) {
-        return;
-    }
-
-    for (const uint32_t frame : capture_dump_frames) {
-        if (captured_frames_ == frame) {
-            capture_.dump_bmp(*capture_dump_prefix_ + "-" +
-                              std::to_string(frame) + ".bmp");
-            break;
-        }
-    }
-}
-
 void Editor::resize(uint16_t width, uint16_t height) {
     if (!win32_window_.handle_) {
         return;
     }
 
-    // The plugin reports the size it wants for its *client* area, so the window
-    // has to be grown to fit the decorations around it or the GUI ends up
-    // cropped
-    RECT window_rect{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    AdjustWindowRectEx(&window_rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
-
-    SetWindowPos(win32_window_.handle_, nullptr, 0, 0,
-                 window_rect.right - window_rect.left,
-                 window_rect.bottom - window_rect.top,
+    // A borderless popup has no decorations, so the plugin's client size is
+    // the window's size
+    SetWindowPos(win32_window_.handle_, nullptr, 0, 0, width, height,
                  SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER);
 }
 
@@ -670,6 +303,22 @@ void Editor::show() noexcept {
     }
 
     ShowWindow(win32_window_.handle_, SW_SHOWNORMAL);
+
+    // The driver answers the opt-in when the window is first shown, by setting
+    // the team the native side has to address
+    const auto team = static_cast<int32_t>(reinterpret_cast<INT_PTR>(
+        GetPropA(win32_window_.handle_, RENKU_HOST_PROP_TEAM)));
+    if (team <= 0) {
+        // Another driver, or one without the hosted mode, would put the
+        // editor on screen as a stray borderless window of its own instead
+        ShowWindow(win32_window_.handle_, SW_HIDE);
+        log_no_hosted_mode(logger_);
+        return;
+    }
+
+    host_ = EditorHost{.team = team,
+                       .cookie = static_cast<uint64_t>(
+                           reinterpret_cast<uintptr_t>(win32_window_.handle_))};
 }
 
 void Editor::handle_x11_events() noexcept {
@@ -679,4 +328,8 @@ void Editor::handle_x11_events() noexcept {
 
 HWND Editor::win32_handle() const noexcept {
     return win32_window_.handle_;
+}
+
+std::optional<EditorHost> Editor::host() const noexcept {
+    return host_;
 }

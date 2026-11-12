@@ -140,16 +140,23 @@ tresult PLUGIN_API Vst3PlugViewProxyImpl::attached(void* parent,
 #ifdef __HAIKU__
         // Nothing was embedded into `parent`, because nothing can be:
         // app_server refuses a parent view token owned by another team. The
-        // Wine side has instead started publishing the editor's pixels, so a
-        // view of our own goes into `parent` to paint them.
+        // Wine side has instead handed the editor window to its graphics
+        // driver, so a view of our own goes into `parent` to show it.
         if (result == Steinberg::kResultOk) {
-            editor_view_ = std::make_unique<BridgedEditorView>(
-                bridge_.logger_.logger_,
-                [this]() { refresh_editor_surface(); });
-            if (editor_view_->attach_to(parent)) {
-                refresh_editor_surface();
-            } else {
-                editor_view_.reset();
+            const YaPlugView::GetEditorHost::Response response =
+                bridge_.send_mutually_recursive_message(
+                    YaPlugView::GetEditorHost{.owner_instance_id =
+                                                  owner_instance_id()});
+
+            // Without a host the Wine side has already logged why, and the
+            // host's view stays empty rather than the editor opening in a
+            // window of its own
+            if (response.host) {
+                editor_view_ =
+                    std::make_unique<HostedEditorView>(bridge_.logger_.logger_);
+                if (!editor_view_->attach(parent, *response.host)) {
+                    editor_view_.reset();
+                }
             }
         }
 #endif
@@ -161,28 +168,6 @@ tresult PLUGIN_API Vst3PlugViewProxyImpl::attached(void* parent,
         return Steinberg::kInvalidArgument;
     }
 }
-
-#ifdef __HAIKU__
-void Vst3PlugViewProxyImpl::refresh_editor_surface() {
-    if (!editor_view_) {
-        return;
-    }
-
-    const YaPlugView::GetEditorSurface::Response response =
-        bridge_.send_mutually_recursive_message(YaPlugView::GetEditorSurface{
-            .owner_instance_id = owner_instance_id()});
-
-    // The editor may simply not have drawn a frame yet, in which case there is
-    // nothing to map and a later call picks it up
-    if (!response.config) {
-        return;
-    }
-
-    if (!editor_view_->has_surface_for(*response.config)) {
-        editor_view_->set_surface(*response.config);
-    }
-}
-#endif
 
 tresult PLUGIN_API Vst3PlugViewProxyImpl::removed() {
 #ifdef __HAIKU__
