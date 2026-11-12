@@ -27,19 +27,18 @@ Among other things you can give it its own Wine environment variables, for examp
 settings go into the plug-in's section of the `vstbridge.toml` next to the stubs and apply the
 next time the plug-in is loaded.
 
-The plug-in's editor appears inside the host's window. Set the prefix's Wine graphics driver to
-`null` so that it does not also open its own window:
+The plug-in's editor appears inside the host's window, with no window of its own. Wine's
+RenkuOS graphics driver shows it there, so the prefix needs no setting for it. A prefix set up
+for vstbridge 0.3 has its graphics driver set to `null`, which now keeps the editor from
+showing at all. Remove that setting:
 
 ```sh
-wine reg add 'HKCU\Software\Wine\Drivers' /v Graphics /d null /f
+wine reg delete 'HKCU\Software\Wine\Drivers' /v Graphics /f
 ```
-
-Editors drawn with Direct3D need the Wayland driver (`/d wayland`) instead, because the software
-OpenGL backend is part of it.
 
 ## Requirements
 
-- **The stack's Wine 11.19** (the `wine` package from
+- **The stack's Wine 11.21-10 or later** (the `wine` package from
   [renku-wine-port](https://github.com/rations/renku-wine-port)), built on
   RenkuOS. The Wine host is a C++ Winelib program, and a stock Wine build does not run
   its static initialisers.

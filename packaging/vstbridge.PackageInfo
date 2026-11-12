@@ -1,5 +1,5 @@
 name			vstbridge
-version			0.3.0-2
+version			0.4.0-1
 architecture	x86_64
 summary			"Wine bridge for Windows VST2/VST3 plug-ins (RenkuOS)"
 description		"Runs Windows VST2 and VST3 plug-ins on RenkuOS by hosting them
@@ -19,12 +19,12 @@ licenses {
 	"GNU GPL v3"
 }
 provides {
-	vstbridge = 0.3.0
-	cmd:vstbridgectl = 0.3.0
+	vstbridge = 0.4.0
+	cmd:vstbridgectl = 0.4.0
 }
 requires {
 	haiku
-	wine >= 11.19
+	wine >= 11.21
 }
 urls {
 	"https://github.com/rations/vstbridge-renku"

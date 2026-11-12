@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 0.4.0
+
+### Changed
+
+- Plug-in editors are shown inside the host's window by Wine's RenkuOS
+  graphics driver, winerenku.drv, instead of being copied there. The editor
+  updates as the plug-in draws rather than at a fixed frame rate, its own
+  menus, dropdowns and dialogs open as native windows in the right place over
+  the host's window, and keys, Escape included, reach it while it has the
+  keyboard. This needs Wine 11.21-10 or later, and the prefix must use
+  winerenku.drv, which is the default.
+- The prefix no longer needs the `null` graphics driver. With it, editors now
+  stay blank; the Wine host logs how to remove the setting.
+
+### Fixed
+
+- A VST2 plug-in whose Wine host has exited or crashed no longer takes the
+  host down with it: its events report failure, its audio is silence and its
+  parameters read as 0.
+- The same for VST3 plug-ins' calls outside audio processing. This was meant
+  to work already, but the bridge mistook its own side for the Wine host's
+  and passed the error on.
+
+### Removed
+
+- The editor capture and the input injection that replaced it on the Wine
+  side, and the shared memory the editor's frames went through.
+
 ## [0.3.0] - 2026-10-21
 
 This release brings in the changes from vstbridge 0.0.3 that apply to Haiku.

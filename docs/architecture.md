@@ -152,59 +152,62 @@ None of the above applies on Haiku, because embedding is not possible there at
 all. Every application gets its own view token space and app_server rejects a
 parent view token belonging to another team, so there is no equivalent of X11
 reparenting or XEmbed, and replicants are not a loophole since they load the
-code into the host's address space. The editor is therefore *copied* rather than
-embedded: `src/wine-host/editor-haiku.{h,cpp}` and `editor-capture.{h,cpp}`
-replace `editor.cpp`, and the X11 sources are dropped from the build rather than
-deleted so upstream changes still apply to them.
+code into the host's address space. `src/wine-host/editor-haiku.{h,cpp}`
+replaces `editor.cpp` instead, and the X11 sources are dropped from the build
+rather than deleted so upstream changes still apply to them.
 
-The plugin draws into an ordinary top-level Wine window that never reaches the
-screen. Each frame that window's backing store is blitted into a 32-bit top-down
-DIB, published through a shared memory object (`src/common/editor-shm.{h,cpp}`)
-and painted into a `BView` on the native side. `B_RGB32` is byte for byte the
-layout of the captured DIB, so no pixel conversion happens anywhere. Input
-travels back the other way through a lock-free ring in the same shared memory
-object and is injected with `NtUserSendHardwareInput`, which preserves the
-capture and drag tracking that plugins rely on. It deliberately does not use the
-control socket, which is strictly request/response and would block the host's UI
-thread for a round trip on every mouse move.
+The editor is shown by Wine's RenkuOS graphics driver, winerenku.drv, which
+normally gives every Wine window a native `BWindow`. A window can opt out of
+that and into the driver's *hosted mode* instead: the driver then gives it no
+`BWindow`, keeps its pixels in an area another program can clone, and takes that
+program's input as if it came from a window of its own. The protocol is a
+handful of `BMessage`s, described in `src/include/renku/renku_host.h`, a copy of
+the driver's own header.
 
-Two details of Wine's window handling are what make the copy cheap and complete,
-and neither holds on real Windows:
+- The Wine host creates the editor as a borderless `WS_POPUP` top-level window
+  and sets the window property `__wine_renku_hosted` on it before showing it.
+  When the window is first shown, the driver sets `__wine_renku_team` on it to
+  the Wine host's team id. The Wine host passes that and the window handle to
+  the native side, as an `EditorHost` (`src/common/editor-host.h`): VST3
+  through `YaPlugView::GetEditorHost` after `IPlugView::attached()`, VST2 as
+  the payload of the `effEditOpen` response.
+- The native side (`src/plugin/editor-host-haiku.{h,cpp}`) adds a `BView`
+  filling the host's parent view and says hello to the driver, at the Wine
+  host's `BApplication`. The driver answers with the area holding the window's
+  pixels, then with each rectangle that changes. The view copies those into a
+  `BBitmap` of its own and acknowledges each one; the driver sends nothing new
+  until it has been acknowledged, so a busy host window costs frames rather
+  than a growing queue.
+- The view sends its mouse, wheel and key events to the driver, which feeds
+  them into Wine as if they came from a `BWindow` of its own. Keys are taken by
+  a filter on the view, which runs before `BWindow` gets to them, so Escape and
+  the window's shortcuts reach the plugin while the editor has the keyboard.
+  The view also reports where it is on screen whenever that changes, so that
+  Wine knows where the editor is: the plugin's own menus, dropdowns and dialogs
+  are ordinary windows with a `BWindow` each, and open in the right place over
+  the host's window.
 
-- Painting lands in an in-memory `window_surface` rather than a screen
-  framebuffer, so reading a window's DC yields what the plugin drew regardless
-  of what is on screen.
-- Child windows get no surface of their own and draw into their top-level
-  ancestor's, so one `BitBlt()` captures the editor with all its controls.
+Nothing on the native side ever waits on the Wine host. Input is sent with a
+zero timeout and the driver's messages arrive on the host window's looper, so a
+Wine host that hangs only stops the editor from updating, and one that dies
+makes every send fail and leaves the view empty.
 
-That second property stops at the top level. Dropdowns and context menus are
-`WS_POPUP` windows, which are not children: they get a surface of their own and
-so appear nowhere in the editor window's DC. Visible top-level windows belonging
-to the editor's thread are blitted over the frame separately, positioned
-relative to the editor's client origin and clipped to it. For the same reason
-injected mouse events name no target window, so the server hit-tests them by
-position the way it would for a real mouse; naming the editor window would pin
-every event to it and a popup stacked above it could never be clicked.
+Only windows with the property are affected, so other Wine programs in the same
+prefix keep their own windows. An editor window that uses OpenGL is drawn into
+the window's pixels in software rather than through a layer of its own, since
+there is no `BWindow` to put a layer in.
 
 #### Prefix requirement
 
-The bridge needs the Wine prefix to use the **null graphics driver**:
+The prefix has to use winerenku.drv, Wine's default graphics driver on RenkuOS.
+vstbridge 0.3 copied the editor instead and asked for the null driver, which
+shows no editor at all now. If the Wine host finds that the driver did not take
+the window, it hides the window rather than let it float on screen, and logs
+how to remove the setting:
 
 ```shell
-wine reg add 'HKCU\Software\Wine\Drivers' /v Graphics /d null /f
+wine reg delete 'HKCU\Software\Wine\Drivers' /v Graphics /f
 ```
-
-The null driver declines to create a driver window surface, which sends win32u
-down its offscreen surface path instead. The editor window still gets somewhere
-to draw and still receives `WM_PAINT`, but never reaches a display, so the
-host's copy is the only one visible. Hiding the window would not work: an
-invisible window gets no surface at all and stops painting entirely, taking the
-capture with it.
-
-This is chosen once per prefix, by explorer when it creates the desktop, so the
-bridge cannot set it per plugin and does not try. Any other driver still works,
-just with the plugin's own window floating on screen alongside the host's copy;
-the Wine host logs a warning saying so when it finds one.
 
 ## VST2 plugins
 
