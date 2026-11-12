@@ -5,9 +5,10 @@
 > [renku-audio](https://github.com/rations/renku-audio) lists the whole audio stack.
 
 Run **Windows VST2 and VST3 plug-ins** in native RenkuOS hosts such as
-[Kasen](https://github.com/rations/kasen). vstbridge is a RenkuOS port of
-[yabridge](https://github.com/robbert-vdh/yabridge) by Robbert van der Helm. Each Windows
-plug-in gets a small native stub add-on. When a host loads the stub, it starts the plug-in in
+[Kasen](https://github.com/rations/kasen). This is the RenkuOS port of
+[vstbridge](https://github.com/rations/vstbridge), a hard fork of Robbert van der Helm's
+[yabridge](https://github.com/robbert-vdh/yabridge). Each Windows plug-in gets a small native
+stub add-on. When a host loads the stub, it starts the plug-in in
 a Wine host process and passes audio, MIDI, parameters and the editor across.
 
 ## Use
@@ -44,7 +45,7 @@ wine reg delete 'HKCU\Software\Wine\Drivers' /v Graphics /f
   its static initialisers.
 - 64-bit Windows plug-ins only. 32-bit installers and iLok/PACE-protected plug-ins need a
   kernel with per-team LDT and debug-register support, which RenkuOS does not have.
-- VST2 and VST3 only: the CLAP bridge depends on yabridge's X11 editor code, which this port
+- VST2 and VST3 only: the CLAP bridge depends on vstbridge's X11 editor code, which this port
   replaces.
 
 ## Troubleshooting
@@ -53,9 +54,9 @@ wine reg delete 'HKCU\Software\Wine\Drivers' /v Graphics /f
   set when starting the host, log the bridge's messages and the Wine host's output.
 - `WINELOADER=<path to wine>` makes the bridge use a different Wine build, for example one from
   a build tree.
-- Per-plug-in options go in a `vstbridge.toml` next to the stubs, as in yabridge, or can be set
-  in VSTBridge's Plugins tab. Besides yabridge's options there is `environment`, a list of
-  `KEY=VALUE` variables for that plug-in's Wine host:
+- Per-plug-in options go in a `vstbridge.toml` next to the stubs, as in vstbridge, or can be set
+  in VSTBridge's Plugins tab. One of them is `environment`, a list of `KEY=VALUE` variables for
+  that plug-in's Wine host:
 
   ```toml
   ["Amped - Roots.vst3"]
@@ -81,4 +82,4 @@ describes how the bridge works.
 
 ## License
 
-GPL v3, like yabridge. See `COPYING` and `CHANGELOG.md` for upstream's history.
+GPL v3, like vstbridge and yabridge. See `COPYING`, and `CHANGELOG.md` for the history.
